@@ -31,7 +31,7 @@ const userLoginSchema = Joi.object({
 export class UserService {
 
     // In-memory store
-    public users: { Id: number; UserName: string; Name: string; Age: Number; Location: string; Email: string; Hash: string, Salt: string, RefToken: string, Token: string, LastActive: Date }[] = [];
+    public users: { Id: number; UserName: string; Name: string; Age: Number; Location: string; Email: string; Hash: string, Salt: string, RefToken: string, Token?: string, LastActive: Date }[] = [];
     private nextId = 1;
 
     getUsers() {
