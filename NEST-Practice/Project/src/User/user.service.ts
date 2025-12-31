@@ -1,198 +1,151 @@
-import { BadRequestException, ConflictException, HttpException, HttpStatus, Injectable, NotFoundException } from "@nestjs/common";
-import { UserDto } from "./UserDto/user.dto";
-import Joi from "Joi";
-import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
-
-const createUserSchema = Joi.object({
-    Name: Joi.string().required(),
-    Age: Joi.number().required(),
-    Location: Joi.string(),
-    Email: Joi.string().required(),
-    Password: Joi.string().required()
-});
-
-const updateUserSchema = Joi.object({
-    Name: Joi.string(),
-    Age: Joi.number(),
-    Location: Joi.string(),
-    Email: Joi.string(),
-    Password: Joi.string()
-});
-
-const userLoginSchema = Joi.object({
-    Email: Joi.string().required(),
-    Password: Joi.string().required()
-});
-
-
+import {
+  ConflictException,
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable
+} from '@nestjs/common';
+import { UserDto } from './UserDto/user.dto';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+import { User } from './user.entity';
+import { userMetaData } from './Interfaces/user.interface';
 
 @Injectable()
 export class UserService {
 
-    // In-memory store
-    public users: { Id: number; UserName: string; Name: string; Age: Number; Location: string; Email: string; Hash: string, Salt: string, RefToken: string, Token?: string, LastActive: Date }[] = [];
-    private nextId = 1;
+  constructor(
+    @Inject('User-Repo')
+    private userRepo: typeof User
+  ) {}
 
-    getUsers() {
-        return this.users;
+  private createJWT(metadata: userMetaData){
+    return jwt.sign(metadata, 'mySecretKey');
+  }
+
+  private async hashPassword(plainPass: string){
+    return await bcrypt.hash(plainPass, 10);
+  }
+
+  private async validatepassword(plainPass: string, hash: string){
+    return await bcrypt.compare(plainPass, hash);
+  }
+
+  async getUsers() {
+    return await this.userRepo.findAll<User>()
+  }
+
+  async getUserById(user: any) {
+    try {
+
+      let users = await this.userRepo.findOne<User>({where: {Email: user.Email}});
+  
+      const {Hash, Token, Salt, RefToken, ...safeUsers} = users?.dataValues;
+  
+      return safeUsers;
+    } catch (error) {
+      return error.response
+    }
+  }
+
+  async createUsers(UserDto: any) {
+    try {
+      const count = await this.userRepo.count<User>({ where: {Email: UserDto.Email}});
+  
+      if (count > 0) {
+        throw new ConflictException({
+          status: HttpStatus.NOT_ACCEPTABLE,
+          error: 'Email already taken',
+        });
+      }
+  
+      UserDto.Hash = await this.hashPassword(UserDto.Password);
+  
+      delete UserDto.Password;
+  
+      let data = await this.userRepo.create<User>(UserDto);
+  
+      return { id: data.dataValues.id };
+    } catch (error) {
+      return error;
+    }
+  }
+
+  async updateUser(UserDto: any, user: any) {
+    let users = await this.userRepo.findOne<User>({where: {Email: user.Email}});
+
+    if (UserDto.Email) {
+      const count = await this.userRepo.count<User>({ where: {Email: UserDto.Email}});
+
+      if (count > 0) {
+        throw new ConflictException({
+          status: HttpStatus.NOT_ACCEPTABLE,
+          error: 'Email already taken',
+        });
+      }
     }
 
-    getUserById(id: Number, user: any) {
-
-
-        const idx = this.users.findIndex((u) => u.Id == id);
-
-        if (idx == -1 || this.users[idx].Id != user.Id) {
-            throw new NotFoundException({
-                status: HttpStatus.NOT_FOUND,
-                error: 'User Not Found',
-            });
-        }
-
-        return this.users.find(u => u.Id == id)
+    if (UserDto.Password) {
+      UserDto.Hash = await this.hashPassword(UserDto.Password);
+      delete UserDto.Password;
     }
 
-    async createUsers(UserDto: UserDto) {
+    this.userRepo.update<User>(UserDto, {where:{Email: user.Email}});
 
-        const { error, value } = createUserSchema.validate(UserDto);
+    return UserDto;
+  }
 
-        if (error) {
-            throw new BadRequestException({
-                status: HttpStatus.BAD_REQUEST
-            }, {
-                cause: error.details[0].message
-            });
-        }
+  async deleteUser(user: UserDto) {
 
-        const idx = this.users.findIndex((u) => u.Email.toLowerCase() == UserDto.Email.toLowerCase());
+    const deletedUser = await this.userRepo.destroy({ where: {Email: user.Email}});
 
-        if (idx >= 0) {
-                throw new ConflictException({
-                    status: HttpStatus.NOT_ACCEPTABLE,
-                    error: 'Email already taken',
-                });
-        }
+    return deletedUser;
+  }
 
-        value.Hash = await bcrypt.hash(value.Password, 10);
+  async userLogin(cred) {
+    const data = await this.userRepo.findOne<User>({ where: {Email: cred.Email}});
 
-        delete value.Password;
-
-        const user = {
-            Id: this.nextId++,
-            ...value,
-        }
-
-        return { id: this.users.push(user) };
+    if (!data) {
+      throw new HttpException(
+        {
+          status: HttpStatus.NOT_ACCEPTABLE,
+          error: 'Invalid credentials',
+        },
+        HttpStatus.NOT_ACCEPTABLE,
+      );
     }
 
-    updateUser(UserDto: UserDto, user: any) {
+    let hashedPassword = data?.dataValues.Hash;
 
-        const { error, value } = updateUserSchema.validate(UserDto);
+    let isCorrect = await this.validatepassword(cred.Password, hashedPassword);
 
-        if (error) {
-            return error.details[0].message;
-        }
-
-        const idx = this.users.findIndex((u) => u.Email == user.Email);
-
-        if (idx == -1) {
-            throw new NotFoundException({
-                status: HttpStatus.NOT_FOUND,
-                error: 'User Not Found',
-            });
-        }
-
-        if (UserDto.Email) {
-            const data = this.users.filter((u) => u.Email == UserDto.Email && u.Id != user.Id)
-
-            if (data.length > 0) {
-                throw new ConflictException({
-                    status: HttpStatus.NOT_ACCEPTABLE,
-                    error: 'Email already taken',
-                });
-            }
-        }
-
-        const updatedUser = { ...this.users[idx], ...value };
-
-        this.users[idx] = updatedUser;
-
-        return this.users[idx]
+    if (!isCorrect) {
+      throw new HttpException(
+        {
+          status: HttpStatus.NOT_ACCEPTABLE,
+          error: 'Invalid credentials',
+        },
+        HttpStatus.NOT_ACCEPTABLE,
+      );
     }
 
-    deleteUser(user: UserDto) {
-        const idx = this.users.findIndex((u) => u.Email == user.Email);
+    const userMetaData = {
+      Id: data?.dataValues.Id,
+      Name: data?.dataValues.Name,
+      Age: data?.dataValues.Age,
+      Email: data?.dataValues.Email,
+    };
 
-        if (idx == -1) {
-            throw new NotFoundException({
-                status: HttpStatus.NOT_FOUND,
-                error: 'User Not Found',
-            });
-        }
+    let Token =  this.createJWT(userMetaData);
 
-        const [deleted] = this.users.splice(idx, 1);
+    await this.userRepo.update<User>({Token}, { where: {Email: cred.Email}});
 
-        return deleted;
-    }
+    return { token: Token };
+  }
 
-    async userLogin(cred) {
+  async logoutUser(user: UserDto) {
+    await this.userRepo.update<User>({Token: null}, { where: {Email: user.Email}});
 
-        const { error, value } = userLoginSchema.validate(cred);
-
-        if (error) {
-            return error;
-        }
-
-        let idx = this.users.findIndex((u) => u.Email == cred.Email);
-
-        if (idx == -1) {
-            throw new HttpException({
-                status: HttpStatus.NOT_ACCEPTABLE,
-                error: 'Invalid credentials',
-            }, HttpStatus.NOT_ACCEPTABLE);
-        }
-
-        let hashedPassword = this.users[idx].Hash;
-
-        let isCorrect = await bcrypt.compare(cred.Password, hashedPassword);
-
-        if (!isCorrect) {
-            throw new NotFoundException({
-                status: HttpStatus.NOT_FOUND,
-                error: 'User Not Found',
-            });
-        }
-
-        const userMetaData = {
-            Id: this.users[idx].Id,
-            Name: this.users[idx].Name,
-            Age: this.users[idx].Age,
-            Email: this.users[idx].Email,
-        }
-
-        let Token = jwt.sign(userMetaData, 'mySecretKey');
-
-        const updatedUser = { ...this.users[idx], Token };
-
-        this.users[idx] = updatedUser;
-
-        return { token: Token };
-    }
-
-    logoutUser(user: UserDto) {
-
-        const idx = this.users.findIndex((u) => u.Email == user.Email);
-
-        if (idx == -1) {
-            throw new NotFoundException({
-                status: HttpStatus.NOT_FOUND,
-                error: 'User Not Found',
-            });
-        }
-
-        delete this.users[idx].Token;
-
-        return "User Logged out!"
-    }
+    return 'User Logged out!';
+  }
 }
